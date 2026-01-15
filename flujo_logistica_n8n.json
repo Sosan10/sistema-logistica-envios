@@ -1,0 +1,456 @@
+{
+  "name": "Sistema de Logística y Seguimiento de Envíos",
+  "nodes": [
+    {
+      "id": "1",
+      "name": "Webhook - Nuevo Pedido",
+      "type": "n8n-nodes-base.webhook",
+      "parameters": {
+        "path": "nuevo-pedido",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "webhookId": "nuevo-pedido-webhook",
+      "position": [240, 300]
+    },
+    {
+      "id": "2",
+      "name": "Validar Datos Pedido",
+      "type": "n8n-nodes-base.function",
+      "parameters": {
+        "functionCode": "// Validar datos del pedido recibido\nconst requiredFields = ['cliente', 'direccion', 'ciudad', 'peso', 'dimensiones'];\nconst missingFields = [];\n\nrequiredFields.forEach(field => {\n  if (!inputJson[field]) {\n    missingFields.push(field);\n  }\n});\n\nif (missingFields.length > 0) {\n  throw new Error(`Campos obligatorios faltantes: ${missingFields.join(', ')}`);\n}\n\n// Generar ID único para el envío\nconst envioId = 'ENV' + Date.now() + Math.random().toString(36).substr(2, 5);\n\nreturn {\n  envioId: envioId,\n  datosValidados: inputJson,\n  timestamp: new Date().toISOString(),\n  estado: 'validado'\n};"
+      },
+      "position": [460, 300]
+    },
+    {
+      "id": "3",
+      "name": "Asignar Transportista",
+      "type": "n8n-nodes-base.function",
+      "parameters": {
+        "functionCode": "// Algoritmo de asignación automática de transportista\nconst transportistas = [\n  { nombre: 'Transporte Rápido SA', capacidad: 100, costo: 1.2, rating: 4.5, zonas: ['norte', 'centro'] },\n  { nombre: 'Logística Nacional', capacidad: 150, costo: 1.0, rating: 4.2, zonas: ['nacional'] },\n  { nombre: 'Envía Seguro', capacidad: 80, costo: 1.5, rating: 4.8, zonas: ['centro', 'sur'] },\n  { nombre: 'Mensajería Express', capacidad: 120, costo: 1.3, rating: 4.3, zonas: ['norte', 'este'] }\n];\n\nconst datos = inputJson.datosValidados;\n\n// Calcular score para cada transportista\nconst transportistasScore = transportistas.map(trans => {\n  let score = 0;\n  \n  // Priorizar menor costo (40%)\n  score += (1 / trans.costo) * 40;\n  \n  // Priorizar mejor rating (30%)\n  score += trans.rating * 30 / 5;\n  \n  // Priorizar disponibilidad de capacidad (20%)\n  score += (trans.capacidad / 200) * 20;\n  \n  // Priorizar cobertura de zona (10%)\n  const zonas = ['norte', 'sur', 'este', 'oeste', 'centro'];\n  const zonaEnvio = determinarZona(datos.ciudad);\n  if (trans.zonas.includes(zonaEnvio)) {\n    score += 10;\n  }\n  \n  return { ...trans, score };\n});\n\n// Seleccionar transportista con mayor score\nconst transportistaAsignado = transportistasScore.reduce((prev, current) => {\n  return (prev.score > current.score) ? prev : current;\n});\n\nfunction determinarZona(ciudad) {\n  const zonas = {\n    'norte': ['bilbao', 'santander', 'san sebastian'],\n    'sur': ['sevilla', 'malaga', 'granada', 'cadiz'],\n    'este': ['barcelona', 'valencia', 'alicante', 'zaragoza'],\n    'oeste': ['salamanca', 'caceres', 'badajoz'],\n    'centro': ['madrid', 'toledo', 'valladolid']\n  };\n  \n  for (const [zona, ciudades] of Object.entries(zonas)) {\n    if (ciudades.some(c => ciudad.toLowerCase().includes(c))) {\n      return zona;\n    }\n  }\n  return 'nacional';\n}\n\nreturn {\n  ...inputJson,\n  transportista: transportistaAsignado.nombre,\n  costoEnvio: (transportistaAsignado.costo * datos.peso).toFixed(2),\n  zona: determinarZona(datos.ciudad),\n  fechaAsignacion: new Date().toISOString()\n};"
+      },
+      "position": [680, 300]
+    },
+    {
+      "id": "4",
+      "name": "Generar Etiqueta Envío",
+      "type": "n8n-nodes-base.function",
+      "parameters": {
+        "functionCode": "// Generar etiqueta de envío en formato PDF/HTML\nconst datos = inputJson;\n\nconst etiqueta = {\n  idEnvio: datos.envioId,\n  codigoBarras: `BC${datos.envioId}${Date.now()}`,\n  remitente: {\n    nombre: 'Almacén Central',\n    direccion: 'Calle Logística 123, Madrid',\n    telefono: '+34 900 123 456'\n  },\n  destinatario: {\n    nombre: datos.datosValidados.cliente,\n    direccion: datos.datosValidados.direccion,\n    ciudad: datos.datosValidados.ciudad,\n    telefono: datos.datosValidados.telefono || 'No especificado'\n  },\n  detalles: {\n    peso: `${datos.datosValidados.peso} kg`,\n    dimensiones: datos.datosValidados.dimensiones,\n    transportista: datos.transportista,\n    instrucciones: datos.datosValidados.instrucciones || 'Manejar con cuidado'\n  },\n  qrCode: `https://tracking.logistica.com/envio/${datos.envioId}`,\n  fechaGeneracion: new Date().toISOString()\n};\n\nreturn {\n  ...datos,\n  etiqueta: etiqueta,\n  estado: 'etiqueta_generada'\n};"
+      },
+      "position": [900, 300]
+    },
+    {
+      "id": "5",
+      "name": "Guardar en Supabase",
+      "type": "n8n-nodes-base.supabase",
+      "parameters": {
+        "operation": "insert",
+        "schema": "public",
+        "table": "envios",
+        "data": "={{ {\n  id: $json.envioId,\n  cliente: $json.datosValidados.cliente,\n  direccion: $json.datosValidados.direccion,\n  ciudad: $json.datosValidados.ciudad,\n  peso: $json.datosValidados.peso,\n  dimensiones: $json.datosValidados.dimensiones,\n  transportista: $json.transportista,\n  costo_envio: $json.costoEnvio,\n  estado: 'creado',\n  etiqueta: $json.etiqueta,\n  fecha_creacion: $json.timestamp,\n  fecha_actualizacion: new Date().toISOString()\n} }}",
+        "additionalFields": {}
+      },
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-credential",
+          "name": "Supabase API"
+        }
+      },
+      "position": [1120, 300]
+    },
+    {
+      "id": "6",
+      "name": "Notificación - Envío Creado",
+      "type": "n8n-nodes-base.emailSend",
+      "parameters": {
+        "fromEmail": "notificaciones@logistica.com",
+        "toEmail": "={{ $json.datosValidados.email }}",
+        "subject": "Tu envío ha sido creado - {{ $json.envioId }}",
+        "text": "={{ `Hola ${$json.datosValidados.cliente},\\n\\nTu envío ha sido creado exitosamente.\\n\\nDetalles:\\n- ID de envío: ${$json.envioId}\\n- Transportista: ${$json.transportista}\\n- Costo: €${$json.costoEnvio}\\n\\nPuedes seguir tu envío en: https://tracking.logistica.com/envio/${$json.envioId}\\n\\nSaludos,\\nEquipo de Logística` }}",
+        "html": "={{ `<h2>¡Tu envío está en camino!</h2>\n<p>Hola <strong>${$json.datosValidados.cliente}</strong>,</p>\n<p>Tu envío ha sido creado exitosamente y pronto estará en camino.</p>\n<div style=\"background: #f5f5f5; padding: 15px; border-radius: 5px;\">\n  <h3>Detalles del envío:</h3>\n  <ul>\n    <li><strong>ID de envío:</strong> ${$json.envioId}</li>\n    <li><strong>Transportista:</strong> ${$json.transportista}</li>\n    <li><strong>Costo:</strong> €${$json.costoEnvio}</li>\n    <li><strong>Dirección:</strong> ${$json.datosValidados.direccion}, ${$json.datosValidados.ciudad}</li>\n  </ul>\n</div>\n<p><a href=\"https://tracking.logistica.com/envio/${$json.envioId}\" style=\"background: #007cba; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px;\">Seguir mi envío</a></p>\n<p>Saludos,<br>Equipo de Logística</p>` }}"
+      },
+      "credentials": {
+        "smtp": {
+          "id": "smtp-credential",
+          "name": "SMTP"
+        }
+      },
+      "position": [1340, 300]
+    },
+    {
+      "id": "7",
+      "name": "Webhook - Actualización GPS",
+      "type": "n8n-nodes-base.webhook",
+      "parameters": {
+        "path": "actualizacion-gps",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "webhookId": "gps-update-webhook",
+      "position": [240, 500]
+    },
+    {
+      "id": "8",
+      "name": "Procesar Datos GPS",
+      "type": "n8n-nodes-base.function",
+      "parameters": {
+        "functionCode": "// Procesar datos GPS del transportista\nconst gpsData = inputJson;\n\n// Validar datos GPS\nif (!gpsData.envioId || !gpsData.latitud || !gpsData.longitud) {\n  throw new Error('Datos GPS incompletos');\n}\n\n// Calcular velocidad y estimación de entrega\nconst velocidadPromedio = 60; // km/h\nconst ubicacionActual = {\n  lat: parseFloat(gpsData.latitud),\n  lng: parseFloat(gpsData.longitud)\n};\n\n// Simular cálculo de distancia restante (en implementación real usaríamos API de mapas)\nconst distanciaRestante = Math.random() * 300 + 50; // km\nconst tiempoEstimado = distanciaRestante / velocidadPromedio; // horas\n\nconst estimacionEntrega = new Date();\nestimacionEntrega.setHours(estimacionEntrega.getHours() + tiempoEstimado);\n\nreturn {\n  envioId: gpsData.envioId,\n  ubicacion: ubicacionActual,\n  timestamp: new Date().toISOString(),\n  velocidad: gpsData.velocidad || null,\n  direccion: gpsData.direccion || null,\n  distanciaRestante: Math.round(distanciaRestante),\n  tiempoEstimado: Math.round(tiempoEstimado * 60), // minutos\n  estimacionEntrega: estimacionEntrega.toISOString(),\n  estado: 'en_transito'\n};"
+      },
+      "position": [460, 500]
+    },
+    {
+      "id": "9",
+      "name": "Actualizar Supabase GPS",
+      "type": "n8n-nodes-base.supabase",
+      "parameters": {
+        "operation": "update",
+        "schema": "public",
+        "table": "envios",
+        "updateKey": "id",
+        "data": "={{ {\n  ubicacion_actual: $json.ubicacion,\n  ultima_actualizacion_gps: $json.timestamp,\n  distancia_restante: $json.distanciaRestante,\n  tiempo_estimado: $json.tiempoEstimado,\n  estimacion_entrega: $json.estimacionEntrega,\n  estado: 'en_transito',\n  fecha_actualizacion: new Date().toISOString()\n} }}",
+        "additionalFields": {}
+      },
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-credential",
+          "name": "Supabase API"
+        }
+      },
+      "position": [680, 500]
+    },
+    {
+      "id": "10",
+      "name": "Notificación - Actualización Estado",
+      "type": "n8n-nodes-base.emailSend",
+      "parameters": {
+        "fromEmail": "notificaciones@logistica.com",
+        "toEmail": "={{ obtenerEmailCliente($json.envioId) }}",
+        "subject": "Actualización de tu envío {{ $json.envioId }}",
+        "text": "={{ `Tu envío ${$json.envioId} está en camino.\\nUbicación actual: ${$json.ubicacion.lat}, ${$json.ubicacion.lng}\\nTiempo estimado: ${$json.tiempoEstimado} minutos\\n\\nSeguimiento: https://tracking.logistica.com/envio/${$json.envioId}` }}",
+        "html": "={{ `<h3>¡Tu envío está en movimiento!</h3>\n<p>El envío <strong>${$json.envioId}</strong> está en camino a su destino.</p>\n<div style=\"background: #e8f4fd; padding: 15px; border-radius: 5px;\">\n  <p><strong>Ubicación actual:</strong> ${$json.ubicacion.lat}, ${$json.ubicacion.lng}</p>\n  <p><strong>Tiempo estimado:</strong> ${$json.tiempoEstimado} minutos</p>\n  <p><strong>Distancia restante:</strong> ${$json.distanciaRestante} km</p>\n</div>\n<p><a href=\"https://tracking.logistica.com/envio/${$json.envioId}\" style=\"background: #28a745; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px;\">Ver en mapa</a></p>` }}"
+      },
+      "credentials": {
+        "smtp": {
+          "id": "smtp-credential",
+          "name": "SMTP"
+        }
+      },
+      "position": [900, 500]
+    },
+    {
+      "id": "11",
+      "name": "Webhook - Confirmación Entrega",
+      "type": "n8n-nodes-base.webhook",
+      "parameters": {
+        "path": "confirmacion-entrega",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "webhookId": "delivery-confirmation-webhook",
+      "position": [240, 700]
+    },
+    {
+      "id": "12",
+      "name": "Procesar Confirmación",
+      "type": "n8n-nodes-base.function",
+      "parameters": {
+        "functionCode": "// Procesar confirmación de entrega\nconst entregaData = inputJson;\n\n// Validar datos de entrega\nif (!entregaData.envioId || !entregaData.firma || !entregaData.foto) {\n  throw new Error('Datos de entrega incompletos');\n}\n\nconst datosEntrega = {\n  envioId: entregaData.envioId,\n  fechaEntrega: new Date().toISOString(),\n  receptor: entregaData.receptor || 'No especificado',\n  firma: entregaData.firma,\n  foto: entregaData.foto,\n  observaciones: entregaData.observaciones || 'Entrega exitosa',\n  estado: 'entregado'\n};\n\nreturn datosEntrega;"
+      },
+      "position": [460, 700]
+    },
+    {
+      "id": "13",
+      "name": "Actualizar Supabase Entrega",
+      "type": "n8n-nodes-base.supabase",
+      "parameters": {
+        "operation": "update",
+        "schema": "public",
+        "table": "envios",
+        "updateKey": "id",
+        "data": "={{ {\n  estado: 'entregado',\n  fecha_entrega: $json.fechaEntrega,\n  receptor: $json.receptor,\n  firma_entrega: $json.firma,\n  foto_entrega: $json.foto,\n  observaciones_entrega: $json.observaciones,\n  fecha_actualizacion: new Date().toISOString()\n} }}",
+        "additionalFields": {}
+      },
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-credential",
+          "name": "Supabase API"
+        }
+      },
+      "position": [680, 700]
+    },
+    {
+      "id": "14",
+      "name": "Notificación - Entrega Exitosa",
+      "type": "n8n-nodes-base.emailSend",
+      "parameters": {
+        "fromEmail": "notificaciones@logistica.com",
+        "toEmail": "={{ obtenerEmailCliente($json.envioId) }}",
+        "subject": "¡Entrega completada! - {{ $json.envioId }}",
+        "text": "={{ `¡Tu envío ${$json.envioId} ha sido entregado exitosamente!\\n\\nFecha: ${new Date($json.fechaEntrega).toLocaleDateString()}\\nReceptor: ${$json.receptor}\\n\\nGracias por confiar en nosotros.` }}",
+        "html": "={{ `<div style=\"text-align: center; background: #f0f9ff; padding: 30px;\">\n  <h2 style=\"color: #28a745;\">✅ ¡Entrega Completada!</h2>\n  <p>Tu envío ha sido entregado exitosamente.</p>\n  \n  <div style=\"background: white; padding: 20px; border-radius: 10px; margin: 20px 0;\">\n    <h3>Envío: ${$json.envioId}</h3>\n    <p><strong>Fecha de entrega:</strong> ${new Date($json.fechaEntrega).toLocaleDateString()}</p>\n    <p><strong>Recibido por:</strong> ${$json.receptor}</p>\n    <p><strong>Observaciones:</strong> ${$json.observaciones}</p>\n  </div>\n  \n  <p>¡Gracias por confiar en nuestro servicio!</p>\n</div>` }}"
+      },
+      "credentials": {
+        "smtp": {
+          "id": "smtp-credential",
+          "name": "SMTP"
+        }
+      },
+      "position": [900, 700]
+    },
+    {
+      "id": "15",
+      "name": "Trigger Encuesta Satisfacción",
+      "type": "n8n-nodes-base.cron",
+      "parameters": {
+        "triggerTimes": {
+          "item": [
+            {
+              "mode": "everyHour",
+              "hour": 1
+            }
+          ]
+        }
+      },
+      "position": [240, 900]
+    },
+    {
+      "id": "16",
+      "name": "Buscar Entregas Recientes",
+      "type": "n8n-nodes-base.supabase",
+      "parameters": {
+        "operation": "select",
+        "schema": "public",
+        "table": "envios",
+        "filters": {
+          "conditions": [
+            {
+              "key": "estado",
+              "value": "entregado",
+              "condition": "eq"
+            },
+            {
+              "key": "fecha_entrega",
+              "value": "={{ new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString() }}",
+              "condition": "gte"
+            },
+            {
+              "key": "encuesta_enviada",
+              "value": false,
+              "condition": "eq"
+            }
+          ]
+        }
+      },
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-credential",
+          "name": "Supabase API"
+        }
+      },
+      "position": [460, 900]
+    },
+    {
+      "id": "17",
+      "name": "Enviar Encuesta Satisfacción",
+      "type": "n8n-nodes-base.emailSend",
+      "parameters": {
+        "fromEmail": "encuestas@logistica.com",
+        "toEmail": "={{ $json.email_cliente }}",
+        "subject": "¿Cómo calificarías nuestro servicio? - Envío {{ $json.id }}",
+        "html": "={{ `<div style=\"font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;\">\n  <h2>¡Valora tu experiencia!</h2>\n  <p>Hola <strong>${$json.cliente}</strong>,</p>\n  \n  <p>Tu envío <strong>${$json.id}</strong> ha sido entregado. Nos importa tu opinión para mejorar nuestro servicio.</p>\n  \n  <div style=\"text-align: center; margin: 30px 0;\">\n    <a href=\"https://encuestas.logistica.com/valoracion/${$json.id}?rating=5\" style=\"background: #28a745; color: white; padding: 10px 20px; margin: 5px; text-decoration: none; border-radius: 5px;\">⭐ Excelente</a>\n    <a href=\"https://encuestas.logistica.com/valoracion/${$json.id}?rating=4\" style=\"background: #17a2b8; color: white; padding: 10px 20px; margin: 5px; text-decoration: none; border-radius: 5px;\">👍 Bueno</a>\n    <a href=\"https://encuestas.logistica.com/valoracion/${$json.id}?rating=3\" style=\"background: #ffc107; color: black; padding: 10px 20px; margin: 5px; text-decoration: none; border-radius: 5px;\">😐 Regular</a>\n    <a href=\"https://encuestas.logistica.com/valoracion/${$json.id}?rating=2\" style=\"background: #fd7e14; color: white; padding: 10px 20px; margin: 5px; text-decoration: none; border-radius: 5px;\">👎 Malo</a>\n    <a href=\"https://encuestas.logistica.com/valoracion/${$json.id}?rating=1\" style=\"background: #dc3545; color: white; padding: 10px 20px; margin: 5px; text-decoration: none; border-radius: 5px;\">❌ Muy Malo</a>\n  </div>\n  \n  <p>Tu feedback nos ayuda a mejorar. ¡Gracias por participar!</p>\n  \n  <p style=\"color: #666; font-size: 12px; margin-top: 30px;\">\n    Si el botón no funciona, copia y pega este enlace en tu navegador:<br>\n    https://encuestas.logistica.com/valoracion/${$json.id}\n  </p>\n</div>` }}"
+      },
+      "credentials": {
+        "smtp": {
+          "id": "smtp-credential",
+          "name": "SMTP"
+        }
+      },
+      "position": [680, 900]
+    },
+    {
+      "id": "18",
+      "name": "Marcar Encuesta Enviada",
+      "type": "n8n-nodes-base.supabase",
+      "parameters": {
+        "operation": "update",
+        "schema": "public",
+        "table": "envios",
+        "updateKey": "id",
+        "data": "={{ {\n  encuesta_enviada: true,\n  fecha_encuesta: new Date().toISOString()\n} }}",
+        "additionalFields": {}
+      },
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-credential",
+          "name": "Supabase API"
+        }
+      },
+      "position": [900, 900]
+    }
+  ],
+  "connections": {
+    "1": {
+      "main": [
+        [
+          {
+            "node": "2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "2": {
+      "main": [
+        [
+          {
+            "node": "3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "3": {
+      "main": [
+        [
+          {
+            "node": "4",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "4": {
+      "main": [
+        [
+          {
+            "node": "5",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "5": {
+      "main": [
+        [
+          {
+            "node": "6",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "7": {
+      "main": [
+        [
+          {
+            "node": "8",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "8": {
+      "main": [
+        [
+          {
+            "node": "9",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "9": {
+      "main": [
+        [
+          {
+            "node": "10",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "11": {
+      "main": [
+        [
+          {
+            "node": "12",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "12": {
+      "main": [
+        [
+          {
+            "node": "13",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "13": {
+      "main": [
+        [
+          {
+            "node": "14",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "15": {
+      "main": [
+        [
+          {
+            "node": "16",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "16": {
+      "main": [
+        [
+          {
+            "node": "17",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "17": {
+      "main": [
+        [
+          {
+            "node": "18",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 0,
+  "updatedAt": "2023-12-01T10:00:00.000Z",
+  "versionId": "1"
+}
